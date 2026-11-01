@@ -411,11 +411,14 @@ jobs:
         if: steps.inno-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          # Download and install Inno Setup 6 (silent install)
-          $url = "https://jrsoftware.org/download.php/is.exe"
-          $installer = "$env:TEMP\innosetup.exe"
-          Invoke-WebRequest -Uri $url -OutFile $installer
-          Start-Process -FilePath $installer -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-' -Wait
+          # A fork starts without the cache, and jrsoftware.org may answer a
+          # runner with a page instead of the installer. Use the runner's
+          # Chocolatey package, which installs to the cached path.
+          if (Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe') { exit 0 }
+          choco install innosetup --yes --no-progress
+          if (-not (Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) {
+            throw 'Inno Setup 6 was not installed'
+          }
 
       - name: Add Inno Setup to PATH
         shell: pwsh
