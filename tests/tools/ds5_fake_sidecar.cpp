@@ -89,6 +89,8 @@ int main(int argc, char **argv) {
     GetEnvironmentVariableW(L"SUNSHINE_DS5_TEST_LEGACY_CAPABILITIES", nullptr, 0) > 0;
   const auto genshin_compatibility =
     GetEnvironmentVariableW(L"SUNSHINE_DS5_TEST_GENSHIN_COMPATIBILITY", nullptr, 0) > 0;
+  const auto switch_pro =
+    GetEnvironmentVariableW(L"SUNSHINE_DS5_TEST_SWITCH_PRO", nullptr, 0) > 0;
   const auto policy_once_name = L"Local\\sunshine-ds5-test-policy-once-" + event_suffix;
   const auto policy_once_event = OpenEventW(SYNCHRONIZE | EVENT_MODIFY_STATE, FALSE,
                                             policy_once_name.c_str());
@@ -115,6 +117,8 @@ int main(int argc, char **argv) {
     L"Local\\sunshine-ds5-test-genshin-compatibility-" + event_suffix;
   const auto genshin_compatibility_event = OpenEventW(
     EVENT_MODIFY_STATE, FALSE, genshin_compatibility_name.c_str());
+  const auto switch_pro_name = L"Local\\sunshine-ds5-test-switch-pro-" + event_suffix;
+  const auto switch_pro_event = OpenEventW(EVENT_MODIFY_STATE, FALSE, switch_pro_name.c_str());
 
   // A crash-once test can hold the replacement process before it creates its
   // pipe, exposing the Core client's assigned-but-offline recovery window.
@@ -153,6 +157,9 @@ int main(int argc, char **argv) {
       }
       if (microphone_mode) {
         advertised_capabilities |= (1u << 10) | (1u << 11) | (1u << 12);
+      }
+      if (switch_pro) {
+        advertised_capabilities |= 1u << 13;
       }
       write_u32(capabilities.data(), advertised_capabilities);
       if (!reply(pipe, 2, request_id, capabilities)) break;
@@ -210,7 +217,16 @@ int main(int argc, char **argv) {
       if ((audio_policy_fallback || genshin_compatibility) && payload[2] == 1) {
         response[1] = 1;
       }
+      if (payload[2] == 2 && !switch_pro) {
+        // A pre-Switch component rejects the unknown profile mode.
+        std::vector<std::uint8_t> error(8);
+        if (!reply(pipe, 255, request_id, error)) break;
+        continue;
+      }
       if (!reply(pipe, 4, request_id, response)) break;
+      if (switch_pro && payload[2] == 2 && payload[3] == 0 && switch_pro_event) {
+        SetEvent(switch_pro_event);
+      }
       if (genshin_compatibility && payload[2] == 1 && (payload[3] & 1) != 0 &&
           genshin_compatibility_event) {
         SetEvent(genshin_compatibility_event);
@@ -257,6 +273,7 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (switch_pro_event) CloseHandle(switch_pro_event);
   if (genshin_compatibility_event) CloseHandle(genshin_compatibility_event);
   if (marker_event) CloseHandle(marker_event);
   if (hid_fallback_event) CloseHandle(hid_fallback_event);

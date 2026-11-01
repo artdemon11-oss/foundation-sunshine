@@ -566,6 +566,7 @@ internal static class ProtocolSelfTest
         VerifyMicrophoneRegistryGating();
         VerifyBundledCompositeProfile();
         VerifyProfileSelection();
+        VerifySwitchProMapping();
         VerifyHapticsChannelIsolation();
         VerifyDefaultAudioEndpointClassification();
         VerifyDefaultAudioEndpointPolicy();
@@ -960,6 +961,67 @@ internal static class ProtocolSelfTest
         {
             // Expected.
         }
+
+        Require(DeviceRegistry.SelectProfileId(
+                Protocol.SwitchProProfileMode, Protocol.AttachFlags.None, false, false) ==
+                SwitchProSession.ProfileId,
+            "Switch Pro attach profile selection");
+        RequireInvalidData(() => DeviceRegistry.SelectProfileId(
+                Protocol.SwitchProProfileMode, Protocol.AttachFlags.GenshinCompatibilityIdentity, true, true),
+            "Switch Pro attach flag rejection");
+    }
+
+    /// <summary>Checks the positional Moonlight-to-Switch index table, digital triggers and rumble pacing.</summary>
+    private static void VerifySwitchProMapping()
+    {
+        Require((uint)Protocol.Capability.SwitchProProfile == 1u << 13, "Switch Pro capability bit");
+        using (var context = new HMContext())
+        {
+            context.LoadDefaultProfiles();
+            var profile = context.GetProfile(SwitchProSession.ProfileId);
+            Require(profile is not null && profile.VendorId == 0x057E && profile.ProductId == 0x2009 &&
+                    !profile.RequiresUsbipBackend,
+                "Switch Pro profile ships in the pinned runtime");
+        }
+
+        foreach (var (flags, index) in new (uint, int)[]
+                 {
+                     (0x1000, SwitchProSession.IndexB),
+                     (0x2000, SwitchProSession.IndexA),
+                     (0x4000, SwitchProSession.IndexY),
+                     (0x8000, SwitchProSession.IndexX),
+                     (0x0100, SwitchProSession.IndexL),
+                     (0x0200, SwitchProSession.IndexR),
+                     (0x0020, SwitchProSession.IndexMinus),
+                     (0x0010, SwitchProSession.IndexPlus),
+                     (0x0040, SwitchProSession.IndexLeftStick),
+                     (0x0080, SwitchProSession.IndexRightStick),
+                     (0x0400, SwitchProSession.IndexHome),
+                     (0x200000, SwitchProSession.IndexCapture),
+                     (0x100000, SwitchProSession.IndexCapture),
+                 })
+        {
+            Require(SwitchProSession.MapButtons(flags, 0, 0) == 1u << index,
+                $"Switch Pro button 0x{flags:x} maps to index {index}");
+        }
+        Require(SwitchProSession.MapButtons(0x000F, 0, 0) == 0, "D-pad stays off the button mask");
+        Require(SwitchProSession.MapHat(0x0001 | 0x0008) == HMHat.NorthEast &&
+                SwitchProSession.MapHat(0x0002) == HMHat.South && SwitchProSession.MapHat(0) == HMHat.None,
+            "Switch Pro hat mapping");
+        Require(SwitchProSession.MapButtons(0, 127, 127) == 0, "ZL/ZR released below 128");
+        Require(SwitchProSession.MapButtons(0, 128, 255) ==
+                ((1u << SwitchProSession.IndexZl) | (1u << SwitchProSession.IndexZr)),
+            "ZL/ZR pressed from 128");
+
+        var filter = new SwitchProSession.RumbleFilter();
+        var second = System.Diagnostics.Stopwatch.Frequency;
+        Require(filter.ShouldSend(0, 0, 0), "first rumble state is forwarded");
+        Require(!filter.ShouldSend(0, 0, second / 20), "unchanged rumble is held for 100 ms");
+        Require(filter.ShouldSend(10, 0, second / 20), "changed rumble is forwarded at once");
+        Require(filter.Active, "nonzero rumble keeps the stop marker armed");
+        Require(filter.ShouldSend(10, 0, second / 20 + second / 10), "unchanged rumble repeats after 100 ms");
+        Require(filter.ShouldSend(0, 0, second / 20 + second / 10) && !filter.Active,
+            "rumble stop is forwarded at once");
     }
 
     /// <summary>Checks virtual ancestry recognition while excluding physical controllers and unrelated devices.</summary>

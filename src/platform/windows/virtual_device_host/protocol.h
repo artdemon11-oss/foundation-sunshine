@@ -27,7 +27,11 @@ namespace platf::virtual_device_host::protocol {
   inline constexpr std::uint32_t CAP_VIRTUAL_MICROPHONE = 1u << 10;
   inline constexpr std::uint32_t CAP_PERSISTENT_DEVICE_HOST = 1u << 11;
   inline constexpr std::uint32_t CAP_MICROPHONE_STATUS = 1u << 12;
+  inline constexpr std::uint32_t CAP_SWITCH_PRO_PROFILE = 1u << 13;
 
+  inline constexpr std::uint8_t ATTACH_PROFILE_HID = 0;
+  inline constexpr std::uint8_t ATTACH_PROFILE_COMPOSITE = 1;
+  inline constexpr std::uint8_t ATTACH_PROFILE_SWITCH_PRO = 2;
   inline constexpr std::uint8_t ATTACH_FLAG_GENSHIN_COMPATIBILITY = 1u << 0;
   inline constexpr std::uint32_t MICROPHONE_SAMPLE_RATE_HZ = 48'000;
   inline constexpr std::uint8_t MICROPHONE_CHANNELS = 1;

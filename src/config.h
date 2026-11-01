@@ -219,6 +219,9 @@ namespace config {
     bool ds5_inputtino_randomize_mac;
     bool enable_dsu_server;
     uint16_t dsu_server_port;
+    bool switch_label_layout;  ///< Windows Switch Pro: swap A/B and X/Y to match labels instead of positions.
+    int switch_trigger_threshold;  ///< Windows Switch Pro: ZL/ZR press level 17..255; release is 16 lower.
+    bool switch_auto_for_nintendo;  ///< Windows auto mode: emulate Switch Pro for client-reported Nintendo gamepads.
 
     bool keyboard;
     bool mouse;

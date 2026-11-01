@@ -483,7 +483,7 @@ namespace platf {
 
   // Per-app mouse mode: 0=auto (use global config), 1=force virtual mouse, 2=force SendInput
   static std::atomic<int> current_mouse_mode { 0 };
-  // Per-app gamepad mode: 0=inherit global, 1=auto, 2=Xbox 360, 3=DualShock 4, 4=DualSense
+  // Per-app gamepad mode: 0=inherit global, 1=auto, 2=Xbox 360, 3=DualShock 4, 4=DualSense, 5=Switch Pro
   static std::atomic<int> current_gamepad_mode { 0 };
   // Runtime copy of the persisted global policy. 0 means the startup config is authoritative.
   static std::atomic<int> current_global_gamepad_mode { 0 };
@@ -493,6 +493,7 @@ namespace platf {
     if (preference == "x360"sv) return 2;
     if (preference == "ds4"sv) return 3;
     if (preference == "ds5"sv) return 4;
+    if (preference == "switch"sv) return 5;
     return 1;
   }
 
@@ -504,11 +505,11 @@ namespace platf {
 
   void
   set_gamepad_mode(int mode) {
-    if (mode < 0 || mode > 4) {
+    if (mode < 0 || mode > 5) {
       mode = 0;
     }
     current_gamepad_mode.store(mode, std::memory_order_relaxed);
-    constexpr std::array<std::string_view, 5> names { "global", "auto", "Xbox 360", "DualShock 4", "DualSense" };
+    constexpr std::array<std::string_view, 6> names { "global", "auto", "Xbox 360", "DualShock 4", "DualSense", "Switch Pro" };
     BOOST_LOG(info) << "Gamepad mode set to: "sv << names[mode];
   }
 
@@ -521,7 +522,7 @@ namespace platf {
       return;
     }
     current_global_gamepad_mode.store(mode, std::memory_order_relaxed);
-    constexpr std::array<std::string_view, 5> names { "startup config", "auto", "Xbox 360", "DualShock 4", "DualSense" };
+    constexpr std::array<std::string_view, 6> names { "startup config", "auto", "Xbox 360", "DualShock 4", "DualSense", "Switch Pro" };
     BOOST_LOG(info) << "Global gamepad mode hot-applied to: "sv << names[mode]
                     << "; active virtual controllers are unchanged"sv;
   }
@@ -539,6 +540,7 @@ namespace platf {
     if (config::input.gamepad == "x360"sv) return 2;
     if (config::input.gamepad == "ds4"sv) return 3;
     if (config::input.gamepad == "ds5"sv) return 4;
+    if (config::input.gamepad == "switch"sv) return 5;
     return 1;
   }
 
@@ -1973,6 +1975,34 @@ namespace platf {
     }
   }
 
+  /**
+   * @brief Attach a HIDMaestro Switch Pro Controller in the single virtual-device slot.
+   * @return true on success; false leaves the caller to fall back to automatic selection.
+   */
+  static bool
+  alloc_switch_pro(input_raw_t *raw, const gamepad_id_t &id, const feedback_queue_t &feedback_queue,
+                   std::string_view selection_source) {
+    if (raw->ds5_sidecar->slot_in_use()) {
+      BOOST_LOG(warning) << "Gamepad " << id.globalIndex << " cannot be a Switch Pro controller ("sv << selection_source
+                         << "): the virtual device slot is already in use"sv;
+      return false;
+    }
+    BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will be Switch Pro controller ("sv << selection_source << ')';
+    const ds5::switch_pro_settings_t settings {
+      config::input.switch_label_layout,
+      config::input.switch_trigger_threshold,
+    };
+    if (raw->ds5_sidecar->alloc_switch_pro(id, feedback_queue, settings) != 0) {
+      BOOST_LOG(warning) << "Switch Pro allocation failed for "sv << selection_source
+                         << "; falling back to automatic gamepad selection"sv;
+      return false;
+    }
+    // Motion events make the client start sending gyro and accelerometer data.
+    feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(id.clientRelativeIndex, LI_MOTION_TYPE_ACCEL, 100));
+    feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(id.clientRelativeIndex, LI_MOTION_TYPE_GYRO, 100));
+    return true;
+  }
+
   int
   alloc_gamepad(input_t &input, const gamepad_id_t &id, const gamepad_arrival_t &metadata,
                 feedback_queue_t feedback_queue, std::string_view client_gamepad) {
@@ -1982,12 +2012,26 @@ namespace platf {
     // Refresh once per allocation; the input packet hot path reads only the cache.
     ds5::refresh_component_availability();
     const bool ds5_available = raw->ds5_sidecar && ds5::component_available();
+    const bool switch_available = ds5_available && ds5::component_supports_switch_pro();
     // Client-declared preference (Sunshine /launch extension) outranks the
     // per-app and global host-side selection while client_gamepad_override is on.
     const bool client_declared = !client_gamepad.empty() && config::input.client_gamepad_override;
     auto gamepad_mode = selected_gamepad_mode(client_gamepad);
     const auto per_app_override = !client_declared && current_gamepad_mode.load(std::memory_order_relaxed) != 0;
     const char *selection_source = client_declared ? "client selection" : (per_app_override ? "per-app selection" : "global selection");
+
+    if (gamepad_mode == 5 && !switch_available) {
+      BOOST_LOG(warning) << "Switch Pro emulation was requested by "sv << selection_source
+                         << ", but the virtual device component does not support it; falling back to automatic gamepad selection"sv;
+      gamepad_mode = 1;
+    }
+
+    if (gamepad_mode == 5) {
+      if (alloc_switch_pro(raw, id, feedback_queue, selection_source)) {
+        return 0;
+      }
+      gamepad_mode = 1;
+    }
 
     if (gamepad_mode == 4 && !ds5_available) {
       BOOST_LOG(warning) << "DualSense emulation was requested by "sv << selection_source
@@ -2013,6 +2057,12 @@ namespace platf {
       BOOST_LOG(warning) << "DualSense allocation failed for "sv << selection_source
                          << "; falling back to automatic gamepad selection"sv;
       gamepad_mode = 1;
+    }
+
+    // Auto mode gives Nintendo client gamepads a Switch Pro; it needs no ViGEm.
+    if (gamepad_mode == 1 && metadata.type == LI_CTYPE_NINTENDO && config::input.switch_auto_for_nintendo &&
+        switch_available && alloc_switch_pro(raw, id, feedback_queue, "auto-selected by client-reported type"sv)) {
+      return 0;
     }
 
     if (!raw->vigem) {
@@ -2099,7 +2149,7 @@ namespace platf {
   bool
   gamepad_is_ds5(input_t &input, int nr) {
     auto raw = (input_raw_t *) input.get();
-    return raw->ds5_sidecar && raw->ds5_sidecar->owns(nr);
+    return raw->ds5_sidecar && raw->ds5_sidecar->owns(nr) && !raw->ds5_sidecar->owns_switch_pro(nr);
   }
 
   bool
@@ -2626,12 +2676,10 @@ namespace platf {
     }
 
     auto vigem = ((input_raw_t *) input)->vigem;
-    auto dsu_server = ((input_raw_t *) input)->dsu_server;
     auto enabled = vigem != nullptr;
-    auto switch_enabled = dsu_server != nullptr;
     auto ds5_available = ((input_raw_t *) input)->ds5_sidecar->configured();
+    auto switch_available = ds5_available && ds5::component_supports_switch_pro();
     auto reason = enabled ? "" : "gamepads.vigem-not-available";
-    auto switch_reason = switch_enabled ? "" : "gamepads.motion-server-not-available";
 
     // ds4 == ps4
     // This function is queried after runtime configuration changes too. Keep
@@ -2642,7 +2690,7 @@ namespace platf {
     gps[1] = { "x360", enabled, reason };
     gps[2] = { "ds4", enabled, reason };
     gps[3] = { "ds5", ds5_available, ds5_available ? "" : "gamepads.ds5-sidecar-not-available" };
-    gps[4] = { "switch", switch_enabled, switch_reason };
+    gps[4] = { "switch", switch_available, switch_available ? "" : "gamepads.switch-component-not-available" };
 
     for (auto &[name, is_enabled, reason_disabled] : gps) {
       if (!is_enabled) {
@@ -2663,11 +2711,14 @@ namespace platf {
 
     const auto selected_mode = selected_gamepad_mode(client_gamepad);
     const auto ds5_available = ds5::refresh_component_availability();
+    const auto switch_available = ds5_available && ds5::component_supports_switch_pro();
     // 能力声明必须与可选 DS5 组件不可用时的创建前回退保持一致。
-    const auto gamepad_mode = selected_mode == 4 && !ds5_available ? 1 : selected_mode;
+    const auto gamepad_mode = (selected_mode == 4 && !ds5_available) || (selected_mode == 5 && !switch_available) ?
+                                1 :
+                                selected_mode;
 
-    // 与手柄分配使用同一会话选择；强制模拟 Xbox 360 时不声明触控板能力。
-    if (gamepad_mode != 2) {
+    // 与手柄分配使用同一会话选择；强制模拟 Xbox 360 或 Switch Pro 时不声明触控板能力。
+    if (gamepad_mode != 2 && gamepad_mode != 5) {
       caps |= platform_caps::controller_touch;
     }
 

@@ -239,7 +239,7 @@ jobs:
         shell: pwsh
         env:
           RELEASE_TAG: ${{ needs.setup_release.outputs.release_tag }}.杂鱼
-        run: .\scripts\build-ds5-sidecar.ps1 -ReleaseTag $env:RELEASE_TAG
+        run: .\scripts\build-ds5-sidecar.ps1 -ReleaseTag $env:RELEASE_TAG -Repository ${{ github.repository }}
 
       - name: Build Web UI
         shell: pwsh

@@ -200,7 +200,8 @@ namespace nvhttp {
       auto declared_gamepad = get_arg(args, "gamepad", "");
       if (!declared_gamepad.empty() &&
           declared_gamepad != "auto"sv && declared_gamepad != "x360"sv &&
-          declared_gamepad != "ds4"sv && declared_gamepad != "ds5"sv) {
+          declared_gamepad != "ds4"sv && declared_gamepad != "ds5"sv &&
+          declared_gamepad != "switch"sv) {
         BOOST_LOG(warning) << "Ignoring unknown client gamepad preference: "sv << declared_gamepad;
         declared_gamepad.clear();
       }

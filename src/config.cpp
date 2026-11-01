@@ -595,6 +595,9 @@ namespace config {
     true,  // ds5_inputtino_randomize_mac
     false, // enable_dsu_server - disabled by default
     26760, // dsu_server_port - default DSU server port
+    false,  // switch_label_layout - positional A/B/X/Y like Steam
+    64,  // switch_trigger_threshold
+    true,  // switch_auto_for_nintendo
 
     true,  // keyboard enabled
     true,  // mouse enabled
@@ -1571,6 +1574,14 @@ namespace config {
     int temp_port = static_cast<int>(input.dsu_server_port);
     int_between_f(vars, "dsu_server_port", temp_port, { 1024, 65535 });
     input.dsu_server_port = static_cast<uint16_t>(temp_port);
+
+    std::string switch_button_layout;
+    string_restricted_f(vars, "switch_button_layout"s, switch_button_layout, { "positional"sv, "labels"sv });
+    if (!switch_button_layout.empty()) {
+      input.switch_label_layout = switch_button_layout == "labels"sv;
+    }
+    int_between_f(vars, "switch_trigger_threshold", input.switch_trigger_threshold, { 17, 255 });
+    bool_f(vars, "switch_auto_for_nintendo", input.switch_auto_for_nintendo);
 
     bool_f(vars, "mouse", input.mouse);
     bool_f(vars, "keyboard", input.keyboard);

@@ -149,6 +149,8 @@ TEST(VirtualDeviceHostProtocolTests, FreezesSds5V1Abi) {
   EXPECT_EQ(protocol::CAP_VIRTUAL_MICROPHONE, 1u << 10);
   EXPECT_EQ(protocol::CAP_PERSISTENT_DEVICE_HOST, 1u << 11);
   EXPECT_EQ(protocol::CAP_MICROPHONE_STATUS, 1u << 12);
+  EXPECT_EQ(protocol::CAP_SWITCH_PRO_PROFILE, 1u << 13);
+  EXPECT_EQ(protocol::ATTACH_PROFILE_SWITCH_PRO, 2u);
   EXPECT_EQ(static_cast<std::uint16_t>(protocol::message_e::mic_create), 12u);
   EXPECT_EQ(static_cast<std::uint16_t>(protocol::message_e::mic_status), 107u);
   EXPECT_EQ(protocol::MIC_CREATE_PAYLOAD_SIZE, 8u);
@@ -493,6 +495,74 @@ TEST(Ds5SidecarClientTests, MalformedAndForeignHapticsDoNotPoisonControllerState
   EXPECT_FALSE(other->pop(std::chrono::milliseconds(0)));
   EXPECT_TRUE(client.owns(0));
   client.free(0);
+}
+
+TEST(Ds5SidecarClientTests, SwitchProLabelLayoutSwapsFaceButtonsOnly) {
+  constexpr std::uint32_t a = 0x1000, b = 0x2000, x = 0x4000, y = 0x8000, start = 0x0010;
+  EXPECT_EQ(platf::ds5::switch_pro_buttons(a | x | start, false), a | x | start);
+  EXPECT_EQ(platf::ds5::switch_pro_buttons(a | x | start, true), b | y | start);
+  EXPECT_EQ(platf::ds5::switch_pro_buttons(a | b | x | y, true), a | b | x | y);
+  EXPECT_EQ(platf::ds5::switch_pro_buttons(b | y, true), a | x);
+}
+
+TEST(Ds5SidecarClientTests, SwitchProTriggerHysteresisDebouncesAnalogTriggers) {
+  std::uint8_t state = 0;
+  state = platf::ds5::switch_pro_trigger(0, state, 64);
+  EXPECT_EQ(state, 0);
+  state = platf::ds5::switch_pro_trigger(64, state, 64);
+  EXPECT_EQ(state, 255);
+  state = platf::ds5::switch_pro_trigger(53, state, 64);
+  EXPECT_EQ(state, 255);
+  state = platf::ds5::switch_pro_trigger(47, state, 64);
+  EXPECT_EQ(state, 0);
+  state = platf::ds5::switch_pro_trigger(53, state, 64);
+  EXPECT_EQ(state, 0);
+  // Out-of-range thresholds clamp to the configurable 17..255 range.
+  EXPECT_EQ(platf::ds5::switch_pro_trigger(17, 0, 0), 255);
+  EXPECT_EQ(platf::ds5::switch_pro_trigger(254, 0, 1000), 0);
+}
+
+TEST(Ds5SidecarClientTests, AttachesSwitchProWhenSidecarAdvertisesProfile) {
+
+  event_namespace_scope_t events(L"switch-pro-attach");
+  environment_scope_t enable_switch_pro(L"SUNSHINE_DS5_TEST_SWITCH_PRO", L"1");
+  const auto continue_name = L"Local\\sunshine-ds5-test-continue-" + events.suffix;
+  const auto switch_pro_name = L"Local\\sunshine-ds5-test-switch-pro-" + events.suffix;
+  handle_scope_t continue_event(CreateEventW(nullptr, FALSE, TRUE, continue_name.c_str()));
+  handle_scope_t switch_pro_event(CreateEventW(nullptr, FALSE, FALSE, switch_pro_name.c_str()));
+  ASSERT_NE(continue_event.handle, nullptr);
+  ASSERT_NE(switch_pro_event.handle, nullptr);
+
+  auto mail = std::make_shared<safe::mail_raw_t>();
+  auto feedback = mail->queue<platf::gamepad_feedback_msg_t>("ds5-switch-pro-attach-test");
+  platf::ds5::sidecar_client_t client;
+  ASSERT_EQ(client.alloc_switch_pro({ 0, 0 }, std::move(feedback), {}), 0);
+  EXPECT_EQ(WaitForSingleObject(switch_pro_event.handle, 2000), WAIT_OBJECT_0);
+  EXPECT_TRUE(client.owns(0));
+  EXPECT_TRUE(client.owns_switch_pro(0));
+  EXPECT_TRUE(client.slot_in_use());
+  EXPECT_FALSE(client.audio_haptics_active());
+
+  // The single slot is busy: a second Switch Pro or DualSense must fall back.
+  auto second = mail->queue<platf::gamepad_feedback_msg_t>("ds5-switch-pro-second-test");
+  EXPECT_EQ(client.alloc_switch_pro({ 1, 1 }, std::move(second), {}), -1);
+  client.free(0);
+  EXPECT_FALSE(client.slot_in_use());
+}
+
+TEST(Ds5SidecarClientTests, RejectsSwitchProWithoutSidecarCapability) {
+
+  event_namespace_scope_t events(L"switch-pro-capability-required");
+  const auto continue_name = L"Local\\sunshine-ds5-test-continue-" + events.suffix;
+  handle_scope_t continue_event(CreateEventW(nullptr, FALSE, TRUE, continue_name.c_str()));
+  ASSERT_NE(continue_event.handle, nullptr);
+
+  auto mail = std::make_shared<safe::mail_raw_t>();
+  auto feedback = mail->queue<platf::gamepad_feedback_msg_t>("ds5-switch-pro-capability-test");
+  platf::ds5::sidecar_client_t client;
+  EXPECT_EQ(client.alloc_switch_pro({ 0, 0 }, std::move(feedback), {}), -1);
+  EXPECT_FALSE(client.owns(0));
+  EXPECT_FALSE(client.slot_in_use());
 }
 
 TEST(Ds5SidecarClientTests, ReallocatesAfterRecoveryFailure) {

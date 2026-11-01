@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <boost/property_tree/json_parser.hpp>
 
@@ -62,6 +63,27 @@ namespace platf::ds5 {
     }
     catch (const std::exception &exception) {
       error = std::string("Unable to validate the active DualSense component manifest: ") + exception.what();
+      return false;
+    }
+  }
+
+  /** Check the optional "features" array of a compatibility contract that
+   * validate_component_manifest already bound by digest. Older components omit it.
+   */
+  inline bool component_has_feature(const std::filesystem::path &active_root, std::string_view feature) {
+    try {
+      boost::property_tree::ptree compatibility;
+      std::ifstream contract(active_root / "component-compatibility.json", std::ios::binary);
+      boost::property_tree::read_json(contract, compatibility);
+      const auto features = compatibility.get_child_optional("features");
+      if (!features) {
+        return false;
+      }
+      return std::ranges::any_of(*features, [feature](const auto &entry) {
+        return entry.first.empty() && entry.second.data() == feature;
+      });
+    }
+    catch (const std::exception &) {
       return false;
     }
   }

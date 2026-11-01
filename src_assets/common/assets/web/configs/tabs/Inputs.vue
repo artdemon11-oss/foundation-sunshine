@@ -187,6 +187,7 @@ onBeforeUnmount(() => {
           
           <template #windows>
             <option value="ds5">{{ $t('config.gamepad_ds5') }}</option>
+            <option value="switch">{{ $t('config.gamepad_switch') }}</option>
             <option value="ds4">{{ $t('config.gamepad_ds4') }}</option>
             <option value="x360">{{ $t('config.gamepad_x360') }}</option>
           </template>
@@ -200,6 +201,33 @@ onBeforeUnmount(() => {
       >
         <i class="fas fa-info-circle me-2" aria-hidden="true"></i>
         {{ $t('config.gamepad_ds5_component_hint_windows') }}
+      </div>
+      <div
+        v-if="platform === 'windows' && config.gamepad === 'switch'"
+        class="alert alert-warning mt-2 mb-0"
+        role="note"
+      >
+        <i class="fas fa-info-circle me-2" aria-hidden="true"></i>
+        {{ $t('config.gamepad_switch_component_hint_windows') }}
+      </div>
+    </div>
+
+    <!-- Switch Pro input policy (Windows, HIDMaestro component) -->
+    <div class="mb-3"
+         v-if="config.controller === 'enabled' && platform === 'windows' && (config.gamepad === 'switch' || config.gamepad === 'auto')">
+      <div class="mb-3">
+        <label for="switch_button_layout" class="form-label">{{ $t('config.switch_button_layout') }}</label>
+        <select id="switch_button_layout" class="form-select" v-model="config.switch_button_layout">
+          <option value="positional">{{ $t('config.switch_button_layout_positional') }}</option>
+          <option value="labels">{{ $t('config.switch_button_layout_labels') }}</option>
+        </select>
+        <div class="form-text">{{ $t('config.switch_button_layout_desc') }}</div>
+      </div>
+      <div>
+        <label for="switch_trigger_threshold" class="form-label">{{ $t('config.switch_trigger_threshold') }}</label>
+        <input type="number" class="form-control" id="switch_trigger_threshold" placeholder="64"
+               v-model.number="config.switch_trigger_threshold" min="17" max="255" />
+        <div class="form-text">{{ $t('config.switch_trigger_threshold_desc') }}</div>
       </div>
     </div>
 
@@ -257,6 +285,16 @@ onBeforeUnmount(() => {
                 </label>
               </div>
               <div class="form-text">{{ $t('config.touchpad_as_ds4_desc') }}</div>
+            </div>
+            <div class="mb-3">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="switch_auto_for_nintendo"
+                       v-model="config.switch_auto_for_nintendo" true-value="enabled" false-value="disabled">
+                <label class="form-check-label" for="switch_auto_for_nintendo">
+                  {{ $t('config.switch_auto_for_nintendo') }}
+                </label>
+              </div>
+              <div class="form-text">{{ $t('config.switch_auto_for_nintendo_desc') }}</div>
             </div>
             <div class="mb-3">
               <div class="form-check form-switch">

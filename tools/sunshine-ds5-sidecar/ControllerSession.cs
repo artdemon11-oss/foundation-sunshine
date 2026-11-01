@@ -4,7 +4,7 @@ using HIDMaestro;
 
 namespace Sunshine.Ds5Sidecar;
 
-internal sealed class ControllerSession : IDisposable
+internal sealed class ControllerSession : IControllerSession
 {
     private const uint DpadUp = 0x0001;
     private const uint DpadDown = 0x0002;
@@ -81,12 +81,12 @@ internal sealed class ControllerSession : IDisposable
         _controller.SubmitState(in _state);
     }
 
-    internal byte DeviceId { get; }
-    internal byte ClientControllerNumber { get; }
-    internal bool HasAudio => _audioOutput is not null;
+    public byte DeviceId { get; }
+    public byte ClientControllerNumber { get; }
+    public bool HasAudio => _audioOutput is not null;
 
     /// <summary>Starts one monitor for audio-capable sessions and suppresses notifications after disposal.</summary>
-    internal void StartDefaultAudioEndpointGuard()
+    public void StartDefaultAudioEndpointGuard()
     {
         if (_audioOutput is null || _audioEndpointGuard is not null)
             return;
@@ -101,7 +101,7 @@ internal sealed class ControllerSession : IDisposable
         });
     }
 
-    internal void SubmitInput(ReadOnlySpan<byte> payload)
+    public void SubmitInput(ReadOnlySpan<byte> payload)
     {
         // id:u8, reserved:u8/u16, buttons:u32, lt/rt:u8, reserved:u16,
         // lsx/lsy/rsx/rsy:i16 = 20 bytes
@@ -129,7 +129,7 @@ internal sealed class ControllerSession : IDisposable
         }
     }
 
-    internal void SubmitTouch(ReadOnlySpan<byte> payload)
+    public void SubmitTouch(ReadOnlySpan<byte> payload)
     {
         // id:u8, event:u8, reserved:u16, pointer:u32, x/y/pressure:f32 = 20 bytes
         if (payload.Length != 20 || payload[0] != DeviceId)
@@ -185,7 +185,7 @@ internal sealed class ControllerSession : IDisposable
     }
 
     /// <summary>Updates one motion sensor, stamps its host receive time and immediately submits the combined state.</summary>
-    internal void SubmitMotion(ReadOnlySpan<byte> payload)
+    public void SubmitMotion(ReadOnlySpan<byte> payload)
     {
         // id:u8, type:u8, reserved:u16, x/y/z:f32 = 16 bytes
         if (payload.Length != 16 || payload[0] != DeviceId)
@@ -229,7 +229,7 @@ internal sealed class ControllerSession : IDisposable
         }
     }
 
-    internal void SubmitBattery(ReadOnlySpan<byte> payload)
+    public void SubmitBattery(ReadOnlySpan<byte> payload)
     {
         // id:u8, state:u8, percentage:u8, reserved:u8
         if (payload.Length != 4 || payload[0] != DeviceId)

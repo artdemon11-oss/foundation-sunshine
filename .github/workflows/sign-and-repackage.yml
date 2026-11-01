@@ -161,7 +161,7 @@ jobs:
         shell: pwsh
         env:
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.release-tag }}
-        run: .\scripts\build-ds5-sidecar.ps1 -ReleaseTag $env:RELEASE_TAG
+        run: .\scripts\build-ds5-sidecar.ps1 -ReleaseTag $env:RELEASE_TAG -Repository ${{ github.repository }}
 
       - name: Verify HDR build source
         id: hdr_source

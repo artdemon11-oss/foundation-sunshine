@@ -149,5 +149,17 @@ namespace {
     save();
     EXPECT_FALSE(validate());
   }
+
+  TEST_F(Ds5ComponentManifest, ReadsOptionalSwitchProFeature) {
+    EXPECT_FALSE(platf::ds5::component_has_feature(active, "switch-pro"));
+    write(active / "component-compatibility.json",
+      R"({"schema":1,"component_version":"1.5.0","features":["other","switch-pro"]})");
+    EXPECT_TRUE(platf::ds5::component_has_feature(active, "switch-pro"));
+    EXPECT_FALSE(platf::ds5::component_has_feature(active, "switch"));
+    write(active / "component-compatibility.json", R"({"schema":1,"features":{"switch-pro":true}})");
+    EXPECT_FALSE(platf::ds5::component_has_feature(active, "switch-pro"));
+    write(active / "component-compatibility.json", "{ broken JSON");
+    EXPECT_FALSE(platf::ds5::component_has_feature(active, "switch-pro"));
+  }
 }  // namespace
 #endif

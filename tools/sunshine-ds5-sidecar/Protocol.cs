@@ -34,7 +34,11 @@ internal static class Protocol
         VirtualMicrophone = 1u << 10,
         PersistentDeviceHost = 1u << 11,
         MicrophoneStatus = 1u << 12,
+        SwitchProProfile = 1u << 13,
     }
+
+    /// <summary>Attach profile byte: 0 HID DualSense, 1 composite DualSense, 2 Switch Pro.</summary>
+    internal const byte SwitchProProfileMode = 2;
 
     [Flags]
     internal enum AttachFlags : byte

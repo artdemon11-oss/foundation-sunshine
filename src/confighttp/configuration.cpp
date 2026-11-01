@@ -208,14 +208,15 @@ namespace confighttp::configuration {
         std::stringstream body;
         body << request->content.rdbuf();
         pt::read_json(body, inputTree);
-        if (inputTree.empty() || inputTree.size() > 6) {
-          throw std::invalid_argument("controller configuration patch must contain 1 to 6 fields");
+        if (inputTree.empty() || inputTree.size() > 9) {
+          throw std::invalid_argument("controller configuration patch must contain 1 to 9 fields");
         }
 
         const std::set<std::string> boolean_fields {
           "ds4_back_as_touchpad_click",
           "enable_dsu_server",
           "motion_as_ds4",
+          "switch_auto_for_nintendo",
           "touchpad_as_ds4",
         };
         std::map<std::string, std::string> updates;
@@ -225,8 +226,21 @@ namespace confighttp::configuration {
           }
           const auto value = node.get_value<std::string>();
           if (key == "gamepad") {
-            if (value != "auto"sv && value != "x360"sv && value != "ds4"sv && value != "ds5"sv) {
+            if (value != "auto"sv && value != "x360"sv && value != "ds4"sv && value != "ds5"sv &&
+                value != "switch"sv) {
               throw std::invalid_argument("invalid gamepad mode");
+            }
+          }
+          else if (key == "switch_button_layout") {
+            if (value != "positional"sv && value != "labels"sv) {
+              throw std::invalid_argument("invalid Switch Pro button layout");
+            }
+          }
+          else if (key == "switch_trigger_threshold") {
+            std::size_t parsed = 0;
+            const auto threshold = std::stoi(value, &parsed);
+            if (parsed != value.size() || threshold < 17 || threshold > 255) {
+              throw std::invalid_argument("Switch Pro trigger threshold must be between 17 and 255");
             }
           }
           else if (boolean_fields.contains(key)) {

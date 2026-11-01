@@ -26,6 +26,17 @@ installed component without replacing DLLs.
 The upstream SDK API, assembly version and embedded resources are preserved; see
 [`../hidmaestro-core-patch/README.md`](../hidmaestro-core-patch/README.md).
 
+Attach profile `2` creates the stock HIDMaestro `switch-pro` identity
+(Bluetooth 057E:2009) instead of a DualSense. The `SwitchProProfile`
+capability (bit 13) in `HelloReply` advertises it. v1.12.0 packs report `0x30`
+from descriptor button indices, so `SwitchProSession` maps Moonlight buttons by
+position (Moonlight A → Switch B, B → A, X → Y, Y → X), treats ZL/ZR as digital
+(`lt`/`rt` ≥ 128) and forwards motion in SDL axes. Decoded HD rumble amplitude
+returns as the usual `Rumble` message, and touch and battery are ignored. Core
+applies the label layout and trigger hysteresis before sending input, and
+advertises the feature through `"features": ["switch-pro"]` in
+`component-compatibility.json`.
+
 Read-only capability probe:
 
 ```powershell

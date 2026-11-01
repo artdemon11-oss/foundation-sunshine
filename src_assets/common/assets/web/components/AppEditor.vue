@@ -303,6 +303,15 @@
                   {{ t('config.gamepad_ds5_component_hint_windows') }}
                 </div>
 
+                <div
+                  v-if="isWindows && formData.gamepad === 'switch'"
+                  class="alert alert-warning mt-2 mb-3"
+                  role="note"
+                >
+                  <i class="fas fa-info-circle me-2" aria-hidden="true"></i>
+                  {{ t('config.gamepad_switch_component_hint_windows') }}
+                </div>
+
                 <FormField
                   v-if="isWindows"
                   id="mouseMode"

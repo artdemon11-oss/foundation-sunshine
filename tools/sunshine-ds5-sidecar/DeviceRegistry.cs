@@ -16,11 +16,12 @@ internal sealed class DeviceRegistry : IDisposable
         Protocol.Capability.AudioPolicyViolation;
 
     private readonly HMContext _context = new();
-    private readonly Dictionary<byte, ControllerSession> _controllers = new();
+    private readonly Dictionary<byte, IControllerSession> _controllers = new();
     private readonly Action<Protocol.Message> _emit;
     private readonly bool _authoredHapticsAvailable;
     private readonly bool _genshinCompatibilityAvailable;
     private readonly bool _microphonePrototypeAvailable;
+    private readonly bool _switchProAvailable;
     private VirtualMicrophoneSession? _microphone;
     private uint _nextMicrophoneGeneration = 1;
 
@@ -37,6 +38,7 @@ internal sealed class DeviceRegistry : IDisposable
         _microphonePrototypeAvailable = enableCompositeMicrophonePrototype &&
                                         _authoredHapticsAvailable &&
                                         HasPinnedMicrophoneRuntime;
+        _switchProAvailable = _context.GetProfile(SwitchProSession.ProfileId) is not null;
     }
 
     internal Protocol.Capability Capabilities =>
@@ -51,7 +53,8 @@ internal sealed class DeviceRegistry : IDisposable
             ? Protocol.Capability.VirtualMicrophone |
               Protocol.Capability.PersistentDeviceHost |
               Protocol.Capability.MicrophoneStatus
-            : 0);
+            : 0) |
+        (_switchProAvailable ? Protocol.Capability.SwitchProProfile : 0);
 
     internal static bool HasPinnedMicrophoneRuntime
     {
@@ -66,7 +69,7 @@ internal sealed class DeviceRegistry : IDisposable
     /// <summary>Creates a client-owned controller and configures its own render endpoint before replying.</summary>
     internal void Attach(uint requestId, ReadOnlySpan<byte> payload)
     {
-        // id:u8, controller:u8, profile:u8 (0 HID, 1 composite), flags:u8
+        // id:u8, controller:u8, profile:u8 (0 HID, 1 composite, 2 Switch Pro), flags:u8
         if (payload.Length != 4)
             throw new InvalidDataException("Invalid attach payload");
         var deviceId = payload[0];
@@ -95,10 +98,12 @@ internal sealed class DeviceRegistry : IDisposable
         }
 
         var (controller, endpointId) = CreateController(profile);
-        ControllerSession session;
+        IControllerSession session;
         try
         {
-            session = new ControllerSession(deviceId, payload[1], controller, profile, _emit, endpointId);
+            session = profileId == SwitchProSession.ProfileId
+                ? new SwitchProSession(deviceId, payload[1], controller, profile, _emit)
+                : new ControllerSession(deviceId, payload[1], controller, profile, _emit, endpointId);
         }
         catch
         {
@@ -112,21 +117,28 @@ internal sealed class DeviceRegistry : IDisposable
         var reply = new byte[8];
         reply[0] = deviceId;
         reply[1] = session.HasAudio ? (byte)1 : (byte)0;
-        BinaryPrimitives.WriteUInt32LittleEndian(reply.AsSpan(4, 4),
-            (uint)(Protocol.Capability.Hid |
-                   Protocol.Capability.Output |
-                   Protocol.Capability.Touchpad |
-                   Protocol.Capability.Motion |
-                   Protocol.Capability.Battery |
-                   Protocol.Capability.AdaptiveTriggers |
-                   (_genshinCompatibilityAvailable
-                       ? Protocol.Capability.GenshinCompatibilityIdentity
-                       : 0) |
-                   (session.HasAudio
-                       ? Protocol.Capability.AudioFourChannel | Protocol.Capability.AuthoredHapticsPcm
-                       : 0)));
+        BinaryPrimitives.WriteUInt32LittleEndian(reply.AsSpan(4, 4), (uint)AttachCapabilities(session));
         _emit(new Protocol.Message(Protocol.MessageType.AttachReply, requestId, reply));
         session.StartDefaultAudioEndpointGuard();
+    }
+
+    /// <summary>Reports what the attached identity accepts; Switch Pro has no touchpad, audio or adaptive triggers.</summary>
+    private Protocol.Capability AttachCapabilities(IControllerSession session)
+    {
+        if (session is SwitchProSession)
+            return Protocol.Capability.Hid | Protocol.Capability.Output | Protocol.Capability.Motion;
+        return Protocol.Capability.Hid |
+               Protocol.Capability.Output |
+               Protocol.Capability.Touchpad |
+               Protocol.Capability.Motion |
+               Protocol.Capability.Battery |
+               Protocol.Capability.AdaptiveTriggers |
+               (_genshinCompatibilityAvailable
+                   ? Protocol.Capability.GenshinCompatibilityIdentity
+                   : 0) |
+               (session.HasAudio
+                   ? Protocol.Capability.AudioFourChannel | Protocol.Capability.AuthoredHapticsPcm
+                   : 0);
     }
 
     /// <summary>Acknowledges detach after the owned session and render endpoint have been released.</summary>
@@ -140,7 +152,7 @@ internal sealed class DeviceRegistry : IDisposable
     }
 
     /// <summary>Resolves the payload's device ID only within this registry's attached sessions.</summary>
-    internal ControllerSession GetController(ReadOnlySpan<byte> payload)
+    internal IControllerSession GetController(ReadOnlySpan<byte> payload)
     {
         if (payload.IsEmpty || !_controllers.TryGetValue(payload[0], out var controller))
             throw new InvalidOperationException("The requested DS5 device is not attached");
@@ -262,6 +274,12 @@ internal sealed class DeviceRegistry : IDisposable
         byte profileMode, Protocol.AttachFlags flags,
         bool authoredHapticsAvailable, bool genshinCompatibilityAvailable)
     {
+        if (profileMode == Protocol.SwitchProProfileMode)
+        {
+            return flags == Protocol.AttachFlags.None
+                ? SwitchProSession.ProfileId
+                : throw new InvalidDataException("Switch Pro does not accept attach flags");
+        }
         if ((flags & ~Protocol.AttachFlags.GenshinCompatibilityIdentity) != 0)
             throw new InvalidDataException("Unsupported DS5 attach flags");
         var genshinCompatibility = flags.HasFlag(

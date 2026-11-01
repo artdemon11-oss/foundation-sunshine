@@ -38,14 +38,21 @@ namespace platf::ds5 {
 
   namespace {
     using virtual_device_host::protocol::ATTACH_FLAG_GENSHIN_COMPATIBILITY;
+    using virtual_device_host::protocol::ATTACH_PROFILE_COMPOSITE;
+    using virtual_device_host::protocol::ATTACH_PROFILE_HID;
+    using virtual_device_host::protocol::ATTACH_PROFILE_SWITCH_PRO;
     using virtual_device_host::protocol::CAP_AUDIO_POLICY_VIOLATION;
     using virtual_device_host::protocol::CAP_GENSHIN_COMPATIBILITY_IDENTITY;
+    using virtual_device_host::protocol::CAP_SWITCH_PRO_PROFILE;
     using virtual_device_host::protocol::HEADER_SIZE;
     using virtual_device_host::protocol::MAGIC;
     using virtual_device_host::protocol::MAX_PAYLOAD;
     using virtual_device_host::protocol::VERSION;
     using virtual_device_host::protocol::message_e;
     std::atomic_bool trusted_component_available { false };
+    std::atomic_bool trusted_component_switch_pro { false };
+    constexpr std::string_view switch_pro_feature = "switch-pro";
+    constexpr int switch_pro_trigger_hysteresis = 16;
     // The sidecar protocol identifies devices with a single byte.
     static_assert(platf::MAX_GAMEPADS <= 256, "DS5 device ids must fit the wire format");
 
@@ -242,6 +249,11 @@ namespace platf::ds5 {
   }  // namespace
 
   struct sidecar_client_t::impl_t {
+    enum class kind_e {
+      ds5,
+      switch_pro,
+    };
+
     explicit impl_t(boost::atomic<bool> &published_audio_haptics):
         published_audio_haptics(published_audio_haptics) {}
 
@@ -259,6 +271,12 @@ namespace platf::ds5 {
     bool audio_haptics_requested = false;
     bool genshin_compatibility_requested = false;
     bool force_hid_fallback = false;
+    // Fixed per allocation; automatic recovery re-attaches the same identity.
+    kind_e kind = kind_e::ds5;
+    switch_pro_settings_t switch_settings;
+    // Debounced ZL/ZR, touched only by the serialized input thread.
+    std::uint8_t switch_lt = 0;
+    std::uint8_t switch_rt = 0;
     feedback_queue_t feedback_queue;
     ds5_haptics_state_event_t haptics_state;
     std::uint32_t next_request_id = 1;
@@ -334,7 +352,7 @@ namespace platf::ds5 {
           }
           break;
         case message_e::haptics_state:
-          if (p.size() == 10 && p[0] == owned_index && p[1] == client_index && (p[2] & ~3) == 0 &&
+          if (haptics_state && p.size() == 10 && p[0] == owned_index && p[1] == client_index && (p[2] & ~3) == 0 &&
               (p[3] & ~4) == 0 && (p[4] & ~0x62) == 0 && (p[9] & ~1) == 0) {
             haptics_state->raise(gamepad_feedback_msg_t::make_ds5_haptics_state(p[1], p.data() + 2));
           }
@@ -488,6 +506,9 @@ namespace platf::ds5 {
 
     bool connect_and_attach(const gamepad_id_t &id, bool audio_haptics,
                             bool genshin_compatibility) {
+      if (kind == kind_e::switch_pro) {
+        return connect_and_attach_switch_pro(id);
+      }
       bool use_genshin_identity = audio_haptics && genshin_compatibility;
       if (!launch_and_connect()) {
         return false;
@@ -517,7 +538,7 @@ namespace platf::ds5 {
       std::array<std::uint8_t, 4> attach_payload {
         static_cast<std::uint8_t>(id.globalIndex),
         id.clientRelativeIndex,
-        static_cast<std::uint8_t>(audio_haptics ? 1 : 0),
+        audio_haptics ? ATTACH_PROFILE_COMPOSITE : ATTACH_PROFILE_HID,
         static_cast<std::uint8_t>(use_genshin_identity ? ATTACH_FLAG_GENSHIN_COMPATIBILITY : 0),
       };
       // Claim ownership before the transaction so feedback interleaved ahead
@@ -540,6 +561,43 @@ namespace platf::ds5 {
       BOOST_LOG(info) << "DualSense sidecar attached controller "sv << id.globalIndex
                       << (reply.payload[1] ? " with native four-channel haptics" : " (HID only)")
                       << (genshin_compatibility_requested ? " using Genshin compatibility identity" : "");
+      return true;
+    }
+
+    bool connect_and_attach_switch_pro(const gamepad_id_t &id) {
+      if (!launch_and_connect()) {
+        return false;
+      }
+
+      message_t reply;
+      std::array<std::uint8_t, 4> hello {};
+      if (!transact(message_e::hello, hello, message_e::hello_reply, reply) ||
+          reply.payload.size() != 4) {
+        return false;
+      }
+      if ((read_u32(reply.payload.data()) & CAP_SWITCH_PRO_PROFILE) == 0) {
+        BOOST_LOG(warning) << "The installed virtual device component does not advertise Switch Pro emulation"sv;
+        return false;
+      }
+
+      std::array<std::uint8_t, 4> attach_payload {
+        static_cast<std::uint8_t>(id.globalIndex),
+        id.clientRelativeIndex,
+        ATTACH_PROFILE_SWITCH_PRO,
+        0,
+      };
+      global_index = id.globalIndex;
+      if (!transact(message_e::attach, attach_payload, message_e::attach_reply, reply) ||
+          reply.payload.size() != 8 || reply.payload[0] != attach_payload[0]) {
+        return false;
+      }
+
+      client_index = id.clientRelativeIndex;
+      audio_haptics_requested = false;
+      genshin_compatibility_requested = false;
+      online = true;
+      published_audio_haptics.store(false, boost::memory_order_relaxed);
+      BOOST_LOG(info) << "Virtual device sidecar attached Switch Pro controller "sv << id.globalIndex;
       return true;
     }
 
@@ -584,9 +642,12 @@ namespace platf::ds5 {
     }
 
     void reset_haptics() {
-      if (!haptics_state || global_index < 0) return;
-      const std::array<std::uint8_t, 8> reset { 0, 0, 0x62, 0, 0, 0, 0, 0 };
-      haptics_state->raise(gamepad_feedback_msg_t::make_ds5_haptics_state(client_index, reset.data()));
+      if (!feedback_queue || global_index < 0) return;
+      // Switch Pro sessions carry no DualSense haptics state, only rumble.
+      if (haptics_state) {
+        const std::array<std::uint8_t, 8> reset { 0, 0, 0x62, 0, 0, 0, 0, 0 };
+        haptics_state->raise(gamepad_feedback_msg_t::make_ds5_haptics_state(client_index, reset.data()));
+      }
       feedback_queue->raise(gamepad_feedback_msg_t::make_rumble(client_index, 0, 0));
     }
 
@@ -655,16 +716,50 @@ namespace platf::ds5 {
     return trusted_sidecar_path();
   }
 
+  bool component_supports_switch_pro() noexcept {
+    return trusted_component_switch_pro.load(std::memory_order_acquire);
+  }
+
   bool refresh_component_availability() noexcept {
     bool available = false;
+    bool switch_pro = false;
     try {
-      available = trusted_component_path().has_value();
+      const auto path = trusted_component_path();
+      available = path.has_value();
+      // The contract beside the executable was digest-checked by trusted_component_path.
+      switch_pro = available && component_has_feature(path->parent_path(), switch_pro_feature);
     }
     catch (...) {
       available = false;
+      switch_pro = false;
     }
+    trusted_component_switch_pro.store(switch_pro, std::memory_order_release);
     trusted_component_available.store(available, std::memory_order_release);
     return available;
+  }
+
+  std::uint32_t switch_pro_buttons(std::uint32_t button_flags, bool label_layout) noexcept {
+    if (!label_layout) {
+      return button_flags;
+    }
+    constexpr std::uint32_t a = 0x1000, b = 0x2000, x = 0x4000, y = 0x8000;
+    auto result = button_flags & ~(a | b | x | y);
+    if (button_flags & a) result |= b;
+    if (button_flags & b) result |= a;
+    if (button_flags & x) result |= y;
+    if (button_flags & y) result |= x;
+    return result;
+  }
+
+  std::uint8_t switch_pro_trigger(std::uint8_t value, std::uint8_t previous, int threshold) noexcept {
+    threshold = std::clamp(threshold, switch_pro_trigger_hysteresis + 1, 255);
+    if (value >= threshold) {
+      return 255;
+    }
+    if (value < threshold - switch_pro_trigger_hysteresis) {
+      return 0;
+    }
+    return previous;
   }
 
   sidecar_client_t::sidecar_client_t():
@@ -682,6 +777,14 @@ namespace platf::ds5 {
     // Ownership survives a temporary transport outage so the input layer can
     // still release the controller while the reader thread is recovering it.
     return global_index >= 0 && _impl->global_index == global_index;
+  }
+
+  bool sidecar_client_t::slot_in_use() const {
+    return _impl->global_index >= 0;
+  }
+
+  bool sidecar_client_t::owns_switch_pro(int global_index) const {
+    return owns(global_index) && _impl->kind == impl_t::kind_e::switch_pro;
   }
 
   bool sidecar_client_t::audio_haptics_active() const noexcept {
@@ -703,6 +806,24 @@ namespace platf::ds5 {
     return -1;
   }
 
+  int sidecar_client_t::alloc_switch_pro(const gamepad_id_t &id, feedback_queue_t feedback_queue,
+                                         const switch_pro_settings_t &settings) {
+    if (!configured() || _impl->global_index >= 0) {
+      return -1;
+    }
+    _impl->kind = impl_t::kind_e::switch_pro;
+    _impl->switch_settings = settings;
+    _impl->switch_lt = 0;
+    _impl->switch_rt = 0;
+    _impl->feedback_queue = std::move(feedback_queue);
+    _impl->client_index = id.clientRelativeIndex;
+    if (_impl->attach(id, false, false)) {
+      return 0;
+    }
+    _impl = std::make_unique<impl_t>(published_audio_haptics);
+    return -1;
+  }
+
   void sidecar_client_t::free(int global_index) {
     if (_impl->global_index == global_index) {
       _impl->close();
@@ -714,9 +835,21 @@ namespace platf::ds5 {
     if (!owns(global_index) || !_impl->online) return;
     std::array<std::uint8_t, 20> payload {};
     payload[0] = static_cast<std::uint8_t>(global_index);
-    write_u32(payload.data() + 4, state.buttonFlags);
-    payload[8] = state.lt;
-    payload[9] = state.rt;
+    if (_impl->kind == impl_t::kind_e::switch_pro) {
+      // The sidecar knows a single positional table and a fixed 128 trigger
+      // split; layout and hysteresis stay host policy.
+      auto &impl = *_impl;
+      impl.switch_lt = switch_pro_trigger(state.lt, impl.switch_lt, impl.switch_settings.trigger_threshold);
+      impl.switch_rt = switch_pro_trigger(state.rt, impl.switch_rt, impl.switch_settings.trigger_threshold);
+      write_u32(payload.data() + 4, switch_pro_buttons(state.buttonFlags, impl.switch_settings.label_layout));
+      payload[8] = impl.switch_lt;
+      payload[9] = impl.switch_rt;
+    }
+    else {
+      write_u32(payload.data() + 4, state.buttonFlags);
+      payload[8] = state.lt;
+      payload[9] = state.rt;
+    }
     write_u16(payload.data() + 12, static_cast<std::uint16_t>(state.lsX));
     write_u16(payload.data() + 14, static_cast<std::uint16_t>(state.lsY));
     write_u16(payload.data() + 16, static_cast<std::uint16_t>(state.rsX));
@@ -725,7 +858,7 @@ namespace platf::ds5 {
   }
 
   void sidecar_client_t::submit_touch(const gamepad_touch_t &touch) {
-    if (!owns(touch.id.globalIndex) || !_impl->online) return;
+    if (!owns(touch.id.globalIndex) || !_impl->online || _impl->kind == impl_t::kind_e::switch_pro) return;
     std::array<std::uint8_t, 20> payload {};
     payload[0] = static_cast<std::uint8_t>(touch.id.globalIndex);
     payload[1] = touch.eventType;
